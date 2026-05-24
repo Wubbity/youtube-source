@@ -4,13 +4,10 @@ import com.sedmelluq.discord.lavaplayer.tools.FriendlyException;
 import com.sedmelluq.discord.lavaplayer.tools.FriendlyException.Severity;
 import com.sedmelluq.discord.lavaplayer.tools.io.HttpInterface;
 import com.sedmelluq.discord.lavaplayer.track.AudioItem;
-import dev.lavalink.youtube.CannotBeLoaded;
 import dev.lavalink.youtube.YoutubeAudioSourceManager;
 import dev.lavalink.youtube.clients.skeleton.StreamingNonMusicClient;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-
-import java.io.IOException;
 
 public class Tv extends StreamingNonMusicClient {
     public static ClientConfig BASE_CONFIG = new ClientConfig()
@@ -46,10 +43,10 @@ public class Tv extends StreamingNonMusicClient {
         return this.options;
     }
 
-    @Override
-    public boolean canHandleRequest(@NotNull String identifier) {
-        return false;
-    }
+    // canHandleRequest() intentionally not overridden: inherits NonMusicClient behaviour
+    // (handles all direct video IDs; skips music-search prefix). TV is now tried as a
+    // last-resort fallback for login-required content (e.g. Lofi Girl live streams) since
+    // it is the only client that supports OAuth.
 
     @Override
     public boolean supportsOAuth() {
@@ -71,11 +68,9 @@ public class Tv extends StreamingNonMusicClient {
             new RuntimeException("TVHTML5 cannot be used to load playlists"));
     }
 
-    @Override
-    public AudioItem loadVideo(@NotNull YoutubeAudioSourceManager source, @NotNull HttpInterface httpInterface, @NotNull String videoId) throws CannotBeLoaded, IOException {
-        throw new FriendlyException("This client cannot load videos", Severity.COMMON,
-            new RuntimeException("TVHTML5 cannot be used to load videos"));
-    }
+    // loadVideo() intentionally not overridden: inherits NonMusicClient behaviour which
+    // calls loadTrackInfoFromInnertube() with this client's config + OAuth. Required so
+    // login-required videos/streams can have their metadata retrieved.
 
     @Override
     public AudioItem loadMix(@NotNull YoutubeAudioSourceManager source, @NotNull HttpInterface httpInterface, @NotNull String mixId, @Nullable String selectedVideoId) {
