@@ -166,10 +166,18 @@ public class ClientConfig {
     public ClientConfig setAttributes(@NotNull HttpInterface httpInterface) {
         if (userAgent != null) {
             httpInterface.getContext().setAttribute(YoutubeHttpContextFilter.ATTRIBUTE_USER_AGENT_SPECIFIED, userAgent);
+        }
 
-            if (visitorData != null) {
-                httpInterface.getContext().setAttribute(YoutubeHttpContextFilter.ATTRIBUTE_VISITOR_DATA_SPECIFIED, visitorData);
-            }
+        // visitorData must be forwarded independently of userAgent: the WEB and
+        // WEB_EMBEDDED_PLAYER configs define no userAgent, so nesting this inside
+        // the userAgent check meant their X-Goog-Visitor-Id header fell back to
+        // YoutubeAccessTokenTracker's rotating visitor id while the request
+        // payload carried the configured poToken-bound visitorData. YouTube
+        // treats the mismatched identity as bot traffic and returns
+        // LOGIN_REQUIRED ("Sign in to confirm you're not a bot") for every
+        // request, regardless of poToken freshness.
+        if (visitorData != null) {
+            httpInterface.getContext().setAttribute(YoutubeHttpContextFilter.ATTRIBUTE_VISITOR_DATA_SPECIFIED, visitorData);
         }
 
         return this;
