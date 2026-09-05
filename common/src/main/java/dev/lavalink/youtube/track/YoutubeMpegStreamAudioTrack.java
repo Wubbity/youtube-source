@@ -40,17 +40,24 @@ public class YoutubeMpegStreamAudioTrack extends MpegAudioTrack {
         .build();
     private static final long EMPTY_RETRY_THRESHOLD_MS = 400;
     private static final long EMPTY_RETRY_INTERVAL_MS = 50;
-    // Live broadcasts get a far longer budget. A segment that is briefly slow
-    // or not yet published is routine on a 24/7 stream, but the 400ms budget
-    // above is shorter than a single socket timeout (3000ms), so one slow
-    // fetch is enough to mark a still-running broadcast as finished and end
-    // the track for good. Measured on a 24/7 stream reached through a
-    // residential proxy: cuts landed after 37s and 39s of healthy playback
-    // with no fixed period, which is a transient segment delay rather than
-    // the broadcast ending. A real end still terminates, because YouTube
-    // keeps answering 204 and the threshold expires.
-    private static final long LIVE_EMPTY_RETRY_THRESHOLD_MS = 30000;
-    private static final long LIVE_EMPTY_RETRY_INTERVAL_MS = 500;
+    // Live broadcasts get a longer budget than the 400ms above, which is
+    // shorter than a single socket timeout (3000ms) on the same request
+    // config and so gives up on a still-running broadcast after one slow
+    // fetch.
+    //
+    // 5000ms is chosen against frameBufferDurationMs, which is also 5000:
+    // a stall the retry recovers from inside that window is covered by
+    // buffered audio and is inaudible. Anything longer is silence either
+    // way, so it is better to end and let the client re-resolve than to
+    // keep waiting.
+    //
+    // Do NOT raise this much further. The retry loop runs on the track's
+    // processing thread and produces no frames while it spins, so a long
+    // budget just means Lavalink's stuck detector fires instead, AFTER the
+    // buffer drains. Measured: at 30000ms the cuts came back as
+    // reason=stuck with a noticeably LONGER gap than the original 400ms.
+    private static final long LIVE_EMPTY_RETRY_THRESHOLD_MS = 5000;
+    private static final long LIVE_EMPTY_RETRY_INTERVAL_MS = 250;
     private static final long MAX_REWIND_TIME = 43200; // Seconds
 
     private final HttpInterface httpInterface;
@@ -206,6 +213,7 @@ public class YoutubeMpegStreamAudioTrack extends MpegAudioTrack {
 
         try (YoutubePersistentHttpStream stream = new YoutubePersistentHttpStream(httpInterface, segmentUrl, CONTENT_LENGTH_UNKNOWN)) {
             if (stream.checkStatusCode() == HttpStatus.SC_NO_CONTENT || stream.getContentLength() == 0) {
+                discardRedirect();
                 return false;
             }
 
@@ -219,6 +227,7 @@ public class YoutubeMpegStreamAudioTrack extends MpegAudioTrack {
             stream.releaseConnection();
         } catch (IOException e) {
             // IOException here usually means that stream is about to end.
+            discardRedirect();
             return false;
         }
 
@@ -249,6 +258,23 @@ public class YoutubeMpegStreamAudioTrack extends MpegAudioTrack {
         }
 
         fileReader.provideFrames();
+    }
+
+    /**
+     * Forget the cached redirect target after a failed segment fetch, so the next
+     * attempt starts from the original signed URL again.
+     *
+     * Caching the redirect is purely an efficiency measure (see processNextSegment):
+     * it keeps segments on one keep-alive CDN host instead of re-redirecting every
+     * other request. But it is cached for the life of the track, so once that host
+     * stops serving us - node expiry, or an egress IP change under a URL that is
+     * pinned to the address that signed it, which is what a rotating residential
+     * proxy does - every later segment fetches the same dead endpoint and no amount
+     * of retrying can recover. Falling back to the initial URL costs one redirect
+     * and lets YouTube hand out a live host.
+     */
+    private void discardRedirect() {
+        state.redirectUrl = null;
     }
 
     private URI getNextSegmentUrl(TrackState state) {
