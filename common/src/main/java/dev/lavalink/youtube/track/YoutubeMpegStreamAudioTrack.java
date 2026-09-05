@@ -40,6 +40,17 @@ public class YoutubeMpegStreamAudioTrack extends MpegAudioTrack {
         .build();
     private static final long EMPTY_RETRY_THRESHOLD_MS = 400;
     private static final long EMPTY_RETRY_INTERVAL_MS = 50;
+    // Live broadcasts get a far longer budget. A segment that is briefly slow
+    // or not yet published is routine on a 24/7 stream, but the 400ms budget
+    // above is shorter than a single socket timeout (3000ms), so one slow
+    // fetch is enough to mark a still-running broadcast as finished and end
+    // the track for good. Measured on a 24/7 stream reached through a
+    // residential proxy: cuts landed after 37s and 39s of healthy playback
+    // with no fixed period, which is a transient segment delay rather than
+    // the broadcast ending. A real end still terminates, because YouTube
+    // keeps answering 204 and the threshold expires.
+    private static final long LIVE_EMPTY_RETRY_THRESHOLD_MS = 30000;
+    private static final long LIVE_EMPTY_RETRY_INTERVAL_MS = 500;
     private static final long MAX_REWIND_TIME = 43200; // Seconds
 
     private final HttpInterface httpInterface;
@@ -163,18 +174,26 @@ public class YoutubeMpegStreamAudioTrack extends MpegAudioTrack {
         }
 
         // First attempt gave empty result, possibly because the stream is not yet finished, but the next segment is just
-        // not ready yet. Keep retrying at EMPTY_RETRY_INTERVAL_MS intervals until EMPTY_RETRY_THRESHOLD_MS is reached.
+        // not ready yet. Keep retrying at the interval below until the threshold below is reached; both are much
+        // more generous for a live broadcast, where a late segment is routine rather than the end of the stream.
+        long threshold = trackInfo.isStream ? LIVE_EMPTY_RETRY_THRESHOLD_MS : EMPTY_RETRY_THRESHOLD_MS;
+        long interval = trackInfo.isStream ? LIVE_EMPTY_RETRY_INTERVAL_MS : EMPTY_RETRY_INTERVAL_MS;
+
         long waitStart = System.currentTimeMillis();
         long iterationStart = waitStart;
 
         while (!processNextSegment(localExecutor)) {
-            // EMPTY_RETRY_THRESHOLD_MS is the maximum time between the end of the first attempt and the beginning of the last
+            // The threshold is the maximum time between the end of the first attempt and the beginning of the last
             // attempt, to avoid retry being skipped due to response coming slowly.
-            if (iterationStart - waitStart >= EMPTY_RETRY_THRESHOLD_MS) {
+            if (iterationStart - waitStart >= threshold) {
+                if (trackInfo.isStream) {
+                    log.info("Live segment supply did not recover within {}ms, ending stream: {}", threshold, trackInfo.title);
+                }
+
                 state.finished = true;
                 break;
             } else {
-                Thread.sleep(EMPTY_RETRY_INTERVAL_MS);
+                Thread.sleep(interval);
                 iterationStart = System.currentTimeMillis();
             }
         }
